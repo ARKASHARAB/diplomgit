@@ -1,0 +1,159 @@
+<?php
+require_once 'config.php';
+
+$errors = [];
+
+if ($_SERVER['REQUEST_METHOD'] === 'POST') {
+    $email = trim($_POST['email'] ?? '');
+    $password = $_POST['password'] ?? '';
+    
+    // Валидация
+    if (empty($email)) {
+        $errors['email'] = 'Email обязателен';
+    }
+    
+    if (empty($password)) {
+        $errors['password'] = 'Пароль обязателен';
+    }
+    
+    // Авторизация
+    if (empty($errors)) {
+        try {
+            $stmt = $pdo->prepare("SELECT * FROM door_users WHERE email = ?");
+            $stmt->execute([$email]);
+            $user = $stmt->fetch();
+            
+            if ($user && password_verify($password, $user['password_hash'])) {
+                $_SESSION['user_id'] = $user['id'];
+                $_SESSION['user'] = [
+                    'id' => $user['id'],
+                    'username' => $user['username'],
+                    'email' => $user['email'],
+                    'full_name' => $user['full_name']
+                ];
+                
+                // Определяем, является ли пользователь администратором
+                // Проверяем разные возможные поля
+                $is_admin = false;
+                
+                // Проверяем поле is_admin (если есть)
+                if (isset($user['is_admin']) && $user['is_admin']) {
+                    $is_admin = true;
+                }
+                // Проверяем поле is_admin_dachnyinventary (если есть)
+                elseif (isset($user['is_admin_dachnyinventary']) && $user['is_admin_dachnyinventary']) {
+                    $is_admin = true;
+                }
+                // Проверяем поле is_administrator (если есть)
+                elseif (isset($user['is_administrator']) && $user['is_administrator']) {
+                    $is_admin = true;
+                }
+                // Проверяем по email или username для суперадмина
+                elseif ($email === 'admin@example.com' || $user['username'] === 'admin_dacha') {
+                    $is_admin = true;
+                }
+                
+                // Сохраняем флаг администратора в сессии
+                $_SESSION['is_admin'] = $is_admin;
+                $_SESSION['is_admin_dachnyinventary'] = $is_admin; // Для совместимости с другими скриптами
+                
+                // Также сохраняем право редактирования цветов
+                $_SESSION['can_edit_colors'] = isset($user['can_edit_colors']) ? $user['can_edit_colors'] : false;
+                $_SESSION['can_edit_colors_dachnyinventary'] = $_SESSION['can_edit_colors']; // Для совместимости
+                
+                // Переносим корзину из сессии в БД
+                if (!empty($_SESSION['cart'])) {
+                    foreach ($_SESSION['cart'] as $product_id => $item) {
+                        try {
+                            $stmt = $pdo->prepare("INSERT INTO door_cart (user_id, product_id, quantity) VALUES (?, ?, ?) 
+                                                  ON DUPLICATE KEY UPDATE quantity = quantity + VALUES(quantity)");
+                            $stmt->execute([$user['id'], $product_id, $item['quantity']]);
+                        } catch (PDOException $e) {
+                            // Пропускаем ошибки при переносе корзины
+                        }
+                    }
+                }
+                
+                // Загружаем корзину из БД
+                $stmt = $pdo->prepare("SELECT * FROM door_cart WHERE user_id = ?");
+                $stmt->execute([$user['id']]);
+                $cart_items = $stmt->fetchAll();
+                
+                $_SESSION['cart'] = [];
+                foreach ($cart_items as $item) {
+                    $_SESSION['cart'][$item['product_id']] = [
+                        'id' => $item['product_id'],
+                        'quantity' => $item['quantity']
+                    ];
+                }
+                
+                // Если пользователь админ, перенаправляем в админку
+                if ($is_admin) {
+                    header('Location: admin.php');
+                } else {
+                    header('Location: catalog.php');
+                }
+                exit;
+            } else {
+                $errors['general'] = 'Неверный email или пароль';
+            }
+        } catch (PDOException $e) {
+            $errors['general'] = 'Ошибка при авторизации: ' . $e->getMessage();
+        }
+    }
+}
+?>
+
+<?php include 'header.php'; ?>
+
+<div style="max-width: 500px; margin: 50px auto; padding: 30px; background: #fff; border-radius: 10px; box-shadow: 0 2px 15px rgba(0,0,0,0.1);">
+    <h2 style="color: #2c3e50; margin-bottom: 30px; text-align: center;">Вход в аккаунт</h2>
+    
+    <?php if (!empty($errors['general'])): ?>
+        <div style="background-color: #ffebee; color: #c62828; padding: 15px; border-radius: 5px; margin-bottom: 20px;">
+            <?php echo htmlspecialchars($errors['general']); ?>
+        </div>
+    <?php endif; ?>
+    
+    <form method="POST" action="">
+        <div style="margin-bottom: 20px;">
+            <label style="display: block; margin-bottom: 8px; color: #2c3e50; font-weight: 500;">Email *</label>
+            <input type="email" name="email" value="<?php echo htmlspecialchars($_POST['email'] ?? ''); ?>" 
+                   style="width: 90%; padding: 12px; border: 2px solid <?php echo !empty($errors['email']) ? '#e74c3c' : '#e0e0e0'; ?>; border-radius: 8px; font-size: 16px;"
+                   required>
+            <?php if (!empty($errors['email'])): ?>
+                <div style="color: #e74c3c; font-size: 14px; margin-top: 5px;"><?php echo htmlspecialchars($errors['email']); ?></div>
+            <?php endif; ?>
+        </div>
+        
+        <div style="margin-bottom: 30px;">
+            <label style="display: block; margin-bottom: 8px; color: #2c3e50; font-weight: 500;">Пароль *</label>
+            <input type="password" name="password" 
+                   style="width: 90%; padding: 12px; border: 2px solid <?php echo !empty($errors['password']) ? '#e74c3c' : '#e0e0e0'; ?>; border-radius: 8px; font-size: 16px;"
+                   required>
+            <?php if (!empty($errors['password'])): ?>
+                <div style="color: #e74c3c; font-size: 14px; margin-top: 5px;"><?php echo htmlspecialchars($errors['password']); ?></div>
+            <?php endif; ?>
+        </div>
+        
+        <button type="submit" 
+                style="width: 100%; padding: 15px; background-color: #3d3d3d; color: white; border: none; border-radius: 8px; font-size: 16px; font-weight: bold; cursor: pointer; transition: background-color 0.3s;"
+                onmouseover="this.style.backgroundColor='#707070'"
+                onmouseout="this.style.backgroundColor='#3d3d3d'">
+            Войти
+        </button>
+    </form>
+    
+    <div style="text-align: center; margin-top: 25px; padding-top: 25px; border-top: 1px solid #eee;">
+        <p style="color: #7f8c8d;">Нет аккаунта? <a href="register.php" style="color: #3498db; text-decoration: none;">Зарегистрироваться</a></p>
+    </div>
+    
+    <!-- Для тестирования админки -->
+    <div style="text-align: center; margin-top: 20px; padding: 15px; background-color: #f8f9fa; border-radius: 8px;">
+        <p style="color: #666; font-size: 14px; margin-bottom: 10px;">Для тестирования админки:</p>
+        <p style="color: #333; font-size: 12px; margin-bottom: 5px;">Email: admin@example.com</p>
+        <p style="color: #333; font-size: 12px; margin-bottom: 5px;">Или username: admin_dacha</p>
+    </div>
+</div>
+
+<?php include 'footer.php'; ?>
